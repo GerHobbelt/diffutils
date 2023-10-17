@@ -3,6 +3,9 @@
 @setfilename diffutils.info
 @include version.texi
 @settitle Comparing and Merging Files
+@documentencoding UTF-8
+@set txicodequoteundirected
+@set txicodequotebacktick
 @syncodeindex vr cp
 @setchapternewpage odd
 @comment %**end of header
@@ -14,7 +17,7 @@ and documents the GNU @command{diff}, @command{diff3},
 differences between files and the GNU @command{patch} command for
 using their output to update files.
 
-Copyright @copyright{} 1992--1994, 1998, 2001--2002, 2004, 2006, 2009--2022
+Copyright @copyright{} 1992--1994, 1998, 2001--2002, 2004, 2006, 2009--2023
 Free Software Foundation, Inc.
 
 @quotation
@@ -235,6 +238,7 @@ need not read them to do its job.
 * Case Folding::      Suppressing differences in alphabetic case.
 * Brief::             Summarizing which files are different.
 * Binary::            Comparing binary files or forcing text comparisons.
+* Mutating Files::    Comparing files that are changing while being read.
 @end menu
 
 @node Hunks
@@ -388,11 +392,41 @@ line against each regular expression.
 @section Suppressing Case Differences
 @cindex case difference suppression
 
-GNU @command{diff} can treat lower case letters as
-equivalent to their upper case counterparts, so that, for example, it
+GNU @command{diff} can treat capital letters as
+equivalent to their small counterparts, so that, for example, it
 considers @samp{Funky Stuff}, @samp{funky STUFF}, and @samp{fUNKy
 stuFf} to all be the same.  To request this, use the @option{-i} or
 @option{--ignore-case} option.
+
+When ignoring case @command{diff} downcases each character before comparing it.
+For example, @samp{diff -i} downcases Greek capital ``Δ'' to small
+``δ'' before comparison.  Although this works for many cases, it may
+have problems in some.  For example:
+
+@itemize @bullet
+@item
+The German word ``Straße'' is not treated like ``STRASSE'' as
+many Germans might expect, because the two words downcase to
+``straße'' and ``strasse'' respectively.
+
+@item
+The Greek name ``Κως'' is not treated like ``ΚΩΣ''
+even though they both end in sigma,
+because the latter's trailing ``Σ'' (U+03A3 GREEK CAPITAL LETTER SIGMA)
+downcases to ``σ'' (U+03C3 GREEK SMALL LETTER SIGMA) instead
+of to ``ς'' (U+03C2 GREEK SMALL LETTER FINAL SIGMA).
+
+@c pdftex cannot handle combining characters, alas.
+@ifnottex
+@item
+The ancient Greek phrase ``Πάντα ῥεῖ'' is not treated like ``ΠΆΝΤΑ ῬΕΙ͂'',
+as the former's trailing ``ῖ'' is the single character U+1FD6 (GREEK
+SMALL LETTER IOTA WITH PERISPOMENI) whereas the latter's trailing
+``Ι͂'' has two characters, U+0399 (GREEK CAPITAL LETTER IOTA) and
+U+0342 (COMBINING GREEK PERISPOMENI).
+@end ifnottex
+
+@end itemize
 
 @node Brief
 @section Summarizing Which Files Differ
@@ -496,6 +530,28 @@ the input files contain a few non-text bytes but otherwise are like
 text files, you can force @command{diff3} to consider all files to be text
 files and compare them line by line by using the @option{-a} or
 @option{--text} option.
+
+@node Mutating Files
+@section Comparing Files While They Are Changing
+@cindex mutating files
+
+Commands like @command{diff} read files and directories by using a
+series of system calls, as operating systems typically do not give a
+program a way to snapshot all its input before processing it.
+If input files change while being read, @command{diff} and related
+commands can generate output that does not correspond to any state of
+the input file system.
+
+For example, if some other process truncates a file to zero size when
+@command{diff} has read just half the file, @command{diff} will use
+the half that it read as its input data.  As another example, if a
+recursive @command{diff} determines that a file is a directory, and
+then some other process replaces the directory with a regular file,
+and then @command{diff} attempts to descend into the directory,
+@command{diff} will issue a diagnostic and fail.
+
+In these situations the output of @command{diff} and related programs
+should be interpreted with some care.
 
 @node Output Formats
 @chapter @command{diff} Output Formats
@@ -1737,7 +1793,7 @@ output formats (@pxref{Output Formats}) @command{diff} cannot
 represent an incomplete line, so it pretends there was a newline and
 reports an error.
 
-For example, suppose @file{F} and @file{G} are one-byte files that
+For example, suppose @file{F} and @file{G} are one-character files that
 contain just @samp{f} and @samp{g}, respectively.  Then @samp{diff F G}
 outputs
 
@@ -1871,6 +1927,10 @@ These adjustments can be applied to any output format.
 @cindex tab stop alignment
 @cindex aligning tab stops
 
+The tab character moves the cursor to the next tab stop.
+Tab stops are normally every 8 display columns;
+this can be altered by the @option{--tabsize=@var{columns}} option.
+
 The lines of text in some of the @command{diff} output formats are
 preceded by one or two characters that indicate whether the text is
 inserted, deleted, or changed.  The addition of those characters can
@@ -1883,9 +1943,7 @@ number of spaces before outputting them; select this method with the
 @option{--expand-tabs} (@option{-t}) option.  To use this form of output with
 @command{patch}, you must give @command{patch} the @option{-l} or
 @option{--ignore-white-space} option (@pxref{Changed White Space}, for more
-information).  @command{diff} normally assumes that tab stops are set
-every 8 print columns, but this can be altered by the
-@option{--tabsize=@var{columns}} option.
+information).
 
 The other method for making tabs line up correctly is to add a tab
 character instead of a space after the indicator character at the
@@ -1897,6 +1955,15 @@ of the screen or the paper.  It also does not work with the unified
 output format, which does not have a space character after the change
 type indicator character.  Select this method with the @option{-T} or
 @option{--initial-tab} option.
+
+GNU @command{diff} currently assumes that the output device respects tab stops,
+displays each character with column width as given by the operating system,
+and displays each encoding error byte in a single column.
+Unfortunately these assumptions are often incorrect
+for encoding errors and non-ASCII characters,
+so complex input data may not line up properly on output,
+and analysis based on the @option{--ignore-tab-expansion} (@option{-E}) option
+may differ from the display device's behavior.
 
 @node Trailing Blanks
 @section Omitting trailing blanks
@@ -3543,9 +3610,12 @@ line word: @option{-bl} is equivalent to @option{-b -l}.
 @table @option
 @item -b
 @itemx --print-bytes
-Print the differing bytes.  Display control bytes as a
-@samp{^} followed by a letter of the alphabet and precede bytes
-that have the high bit set with @samp{M-} (which stands for ``meta'').
+Print the differing bytes.  Display each control byte as a @samp{^}
+followed by an ASCII letter, @samp{@@}, @samp{[}, @samp{\}, @samp{]},
+@samp{^} or @samp{_}.  Precede each byte with the high bit set with
+@samp{M-}, which stands for ``meta''.  A control byte is any byte
+with the high bit clear that does not represent a printable ASCII
+character including space.
 
 @item --help
 Output a summary of usage and then exit.
@@ -3587,20 +3657,16 @@ In the above table, operands that are byte counts are normally
 decimal, but may be preceded by @samp{0} for octal and @samp{0x} for
 hexadecimal.
 
-A byte count can be followed by a suffix to specify a multiple of that
-count; in this case an omitted integer is understood to be 1.  A bare
-size letter, or one followed by @samp{iB}, specifies a multiple using
-powers of 1024.  A size letter followed by @samp{B} specifies powers
-of 1000 instead.  For example, @option{-n 4M} and @option{-n 4MiB} are
-equivalent to @option{-n 4194304}, whereas @option{-n 4MB} is
-equivalent to @option{-n 4000000}.  This notation is upward compatible
-with the @uref{http://www.bipm.fr/enus/3_SI/si-prefixes.html, SI
-prefixes} for decimal multiples and with the
-@uref{http://physics.nist.gov/cuu/Units/binary.html, IEC 60027-2
-prefixes for binary multiples}.
+A byte count can be followed by a suffix to specify a
+multiple of the count.  A bare letter,
+or one followed by @samp{iB}, specifies
+a multiple using powers of 1024.  A letter followed by @samp{B}
+specifies powers of 1000 instead.  For example, @samp{-n 1M} and
+@samp{-n 1MiB} are equivalent to @samp{-n 1048576}, whereas @samp{-n 1MB} is
+equivalent to @samp{-n 1000000}.
 
-The following suffixes are defined.  Large sizes like @code{1Y} may be
-rejected by your computer due to limitations of its arithmetic.
+The following suffixes are defined.  Large sizes like @code{1Q}
+may be rejected by your computer due to limitations of its arithmetic.
 
 @table @samp
 @item kB
@@ -3610,8 +3676,8 @@ kilobyte: @math{10^3 = 1000}.
 @itemx K
 @itemx KiB
 @cindex kibibyte, definition of
-kibibyte: @math{2^10 = 1024}.  @samp{K} is special: the SI prefix is
-@samp{k} and the IEC 60027-2 prefix is @samp{Ki}, but tradition and
+kibibyte: @math{2^{10} = 1024}.  @samp{K} is special: the SI prefix is
+@samp{k} and the ISO/IEC 80000-13 prefix is @samp{Ki}, but tradition and
 POSIX use @samp{k} to mean @samp{KiB}.
 @item MB
 @cindex megabyte, definition of
@@ -3619,49 +3685,59 @@ megabyte: @math{10^6 = 1,000,000}.
 @item M
 @itemx MiB
 @cindex mebibyte, definition of
-mebibyte: @math{2^20 = 1,048,576}.
+mebibyte: @math{2^{20} = 1,048,576}.
 @item GB
 @cindex gigabyte, definition of
 gigabyte: @math{10^9 = 1,000,000,000}.
 @item G
 @itemx GiB
 @cindex gibibyte, definition of
-gibibyte: @math{2^30 = 1,073,741,824}.
+gibibyte: @math{2^{30} = 1,073,741,824}.
 @item TB
 @cindex terabyte, definition of
-terabyte:  @math{10^12 = 1,000,000,000,000}.
+terabyte:  @math{10^{12} = 1,000,000,000,000}.
 @item T
 @itemx TiB
 @cindex tebibyte, definition of
-tebibyte: @math{2^40 = 1,099,511,627,776}.
+tebibyte: @math{2^{40} = 1,099,511,627,776}.
 @item PB
 @cindex petabyte, definition of
-petabyte: @math{10^15 = 1,000,000,000,000,000}.
+petabyte: @math{10^{15} = 1,000,000,000,000,000}.
 @item P
 @itemx PiB
 @cindex pebibyte, definition of
-pebibyte: @math{2^50 = 1,125,899,906,842,624}.
+pebibyte: @math{2^{50} = 1,125,899,906,842,624}.
 @item EB
 @cindex exabyte, definition of
-exabyte: @math{10^18 = 1,000,000,000,000,000,000}.
+exabyte: @math{10^{18} = 1,000,000,000,000,000,000}.
 @item E
 @itemx EiB
 @cindex exbibyte, definition of
-exbibyte: @math{2^60 = 1,152,921,504,606,846,976}.
+exbibyte: @math{2^{60} = 1,152,921,504,606,846,976}.
 @item ZB
 @cindex zettabyte, definition of
-zettabyte: @math{10^21 = 1,000,000,000,000,000,000,000}
+zettabyte: @math{10^{21} = 1,000,000,000,000,000,000,000}
 @item Z
 @itemx ZiB
-@math{2^70 = 1,180,591,620,717,411,303,424}.
-(@samp{Zi} is a GNU extension to IEC 60027-2.)
+zebibyte: @math{2^{70} = 1,180,591,620,717,411,303,424}.
 @item YB
 @cindex yottabyte, definition of
-yottabyte: @math{10^24 = 1,000,000,000,000,000,000,000,000}.
+yottabyte: @math{10^{24} = 1,000,000,000,000,000,000,000,000}.
 @item Y
 @itemx YiB
-@math{2^80 = 1,208,925,819,614,629,174,706,176}.
-(@samp{Yi} is a GNU extension to IEC 60027-2.)
+yobibyte: @math{2^{80} = 1,208,925,819,614,629,174,706,176}.
+@item RB
+@cindex ronnabyte, definition of
+ronnabyte: @math{10^{27} = 1,000,000,000,000,000,000,000,000,000}.
+@item R
+@itemx RiB
+robibyte: @math{2^{90} = 1,237,940,039,285,380,274,899,124,224}.
+@item QB
+@cindex quettabyte, definition of
+quettabyte: @math{10^{30} = 1,000,000,000,000,000,000,000,000,000,000}.
+@item Q
+@itemx QiB
+quebibyte: @math{2^{100} = 1,267,650,600,228,229,401,496,703,205,376}.
 @end table
 
 @node Invoking diff
@@ -4594,39 +4670,37 @@ handle some of the existing formats.  These shortcomings motivate the
 following suggested projects.
 
 @menu
-* Internationalization:: Handling multibyte and varying-width characters.
+* Internationalization:: Handling multi-byte and varying-width characters.
 * Changing Structure::   Handling changes to the directory structure.
 * Special Files::        Handling symbolic links, device special files, etc.
 * Unusual File Names::   Handling file names that contain unusual characters.
-* Timestamp Order::     Outputting diffs in timestamp order.
+* Timestamp Order::      Outputting diffs in timestamp order.
 * Ignoring Changes::     Ignoring certain changes while showing others.
 * Speedups::             Improving performance.
 @end menu
 
 @node Internationalization
-@subsection Handling Multibyte and Varying-Width Characters
-@cindex multibyte characters
+@subsection Handling Multi-byte and Varying-Width Characters
+@cindex multi-byte characters
 @cindex varying-width characters
 
 @command{diff}, @command{diff3} and @command{sdiff} treat each line of
-input as a string of unibyte characters.  This can mishandle multibyte
-characters in some cases.  For example, when asked to ignore spaces,
-@command{diff} does not properly ignore a multibyte space character.
+input as a string of characters and encoding errors, where an
+@dfn{encoding error} is an input byte that is not part of any
+character.  Single-byte and multi-byte characters are supported, along
+with common character encoding systems like UTF-8.  The operating
+system's locale specifies the character encoding, and can be specified
+with the @env{LC_ALL} environment variable.  You can find which
+locales are supported on your system by running the shell command
+@samp{locale -a}.
 
-Also, @command{diff} currently assumes that each byte is one column
-wide, and this assumption is incorrect in some locales, e.g., locales
-that use UTF-8 encoding.  This causes problems with the @option{-y} or
-@option{--side-by-side} option of @command{diff}.
+When counting columns for options like @option{--expand-tabs} (@option{-t}),
+@command{diff} consults the locale for the column width of each character,
+and assumes that each encoding error occupies a single column.
 
-These problems need to be fixed without unduly affecting the
-performance of the utilities in unibyte environments.
-
-The IBM GNU/Linux Technology Center Internationalization Team has
-proposed
-@uref{http://oss.software.ibm.com/developer/opensource/linux/patches/i18n/diffutils-2.7.2-i18n-0.1.patch.gz,patches
-to support internationalized @command{diff}}.
-Unfortunately, these patches are incomplete and are to an older
-version of @command{diff}, so more work needs to be done in this area.
+When ignoring case for @option{--ignore-case} (@option{-i}),
+@command{diff} downcases each character before comparing it,
+regardless of whether it is multi-byte.  @xref{Case Folding}.
 
 @node Changing Structure
 @subsection Handling Changes to the Directory Structure

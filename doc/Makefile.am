@@ -1,6 +1,6 @@
 # Makefile for GNU diffutils documentation.
 
-# Copyright (C) 2001-2002, 2009-2013, 2015-2022 Free Software Foundation, Inc.
+# Copyright (C) 2001-2002, 2009-2013, 2015-2023 Free Software Foundation, Inc.
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -14,6 +14,11 @@
 
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+# The customization variable CHECK_NORMAL_MENU_STRUCTURE is necessary with
+# makeinfo versions ≥ 6.8.
+MAKEINFO = @MAKEINFO@ -c CHECK_NORMAL_MENU_STRUCTURE=1
 
 AM_MAKEINFOFLAGS = --no-split
 

@@ -1,6 +1,6 @@
 /* sdiff-format output routines for GNU DIFF.
 
-   Copyright (C) 1991-1993, 1998, 2001-2002, 2004, 2009-2013, 2015-2022 Free
+   Copyright (C) 1991-1993, 1998, 2001-2002, 2004, 2009-2013, 2015-2023 Free
    Software Foundation, Inc.
 
    This file is part of GNU DIFF.
@@ -22,7 +22,7 @@
 
 #include "diff.h"
 
-#include <wchar.h>
+#include <mcel.h>
 
 static void print_sdiff_common_lines (lin, lin);
 static void print_sdiff_hunk (struct change *);
@@ -37,59 +37,68 @@ print_sdiff_script (struct change *script)
 {
   begin_output ();
 
-  next0 = next1 = - files[0].prefix_lines;
+  next0 = next1 = - curr.file[0].prefix_lines;
   print_script (script, find_change, print_sdiff_hunk);
 
-  print_sdiff_common_lines (files[0].valid_lines, files[1].valid_lines);
+  print_sdiff_common_lines (curr.file[0].valid_lines,
+			    curr.file[1].valid_lines);
 }
 
 /* Tab from column FROM to column TO, where FROM <= TO.  Yield TO.  */
 
-static size_t
-tab_from_to (size_t from, size_t to)
+static intmax_t
+tab_from_to (intmax_t from, intmax_t to)
 {
   FILE *out = outfile;
-  size_t tab;
-  size_t tab_size = tabsize;
 
   if (!expand_tabs)
-    for (tab = from + tab_size - from % tab_size;  tab <= to;  tab += tab_size)
-      {
-        putc ('\t', out);
-        from = tab;
-      }
+    {
+      intmax_t tab_size = tabsize;
+      for (intmax_t tab = from + tab_size - from % tab_size;
+	   tab <= to;  tab += tab_size)
+	{
+	  putc ('\t', out);
+	  from = tab;
+	}
+    }
   while (from++ < to)
     putc (' ', out);
   return to;
 }
 
 /* Print the text for half an sdiff line.  This means truncate to
-   width observing tabs, and trim a trailing newline.  Return the
-   last column written (not the number of chars).  */
+   OUT_BOUND columns, observing tabs, and trim a trailing newline.
+   Return the presumed column position on the output device after
+   the write (not the number of chars).  */
 
-static size_t
-print_half_line (char const *const *line, size_t indent, size_t out_bound)
+static intmax_t
+print_half_line (char const *const *line, intmax_t indent, intmax_t out_bound)
 {
   FILE *out = outfile;
-  register size_t in_position = 0;
-  register size_t out_position = 0;
-  register char const *text_pointer = line[0];
-  register char const *text_limit = line[1];
-  mbstate_t mbstate = { 0 };
+  /* IN_POSITION is the current column position if we were outputting the
+     entire line, i.e. ignoring OUT_BOUND.  */
+  intmax_t in_position = 0;
+  /* OUT_POSITION is the current column position.  It stays <= OUT_BOUND
+     at any moment.  */
+  intmax_t out_position = 0;
+  char const *text_pointer = line[0];
+  char const *text_limit = line[1];
 
   while (text_pointer < text_limit)
     {
       char const *tp0 = text_pointer;
-      register char c = *text_pointer++;
+      char c = *text_pointer++;
 
       switch (c)
         {
         case '\t':
           {
-            size_t spaces = tabsize - in_position % tabsize;
+            intmax_t spaces = tabsize - in_position % tabsize;
+	    intmax_t tabstop;
+	    if (ckd_add (&tabstop, in_position, spaces))
+	      return out_position;
             if (in_position == out_position)
               {
-                size_t tabstop = out_position + spaces;
                 if (expand_tabs)
                   {
                     if (out_bound < tabstop)
@@ -104,7 +113,7 @@ print_half_line (char const *const *line, size_t indent, size_t out_bound)
                       putc (c, out);
                     }
               }
-            in_position += spaces;
+	    in_position = tabstop;
           }
           break;
 
@@ -133,57 +142,60 @@ print_half_line (char const *const *line, size_t indent, size_t out_bound)
 
         default:
           {
-            wchar_t wc;
-            size_t bytes = mbrtowc (&wc, tp0, text_limit - tp0, &mbstate);
+	    /* A byte that might start a multibyte character.
+	       Increase TEXT_POINTER, counting columns.
+	       Assume encoding errors have print width 1.  */
+	    mcel_t g = mcel_scan (tp0, text_limit);
+	    int width = g.err ? 1 : c32width (g.ch);
+	    if (0 < width && ckd_add (&in_position, in_position, width))
+	      return out_position;
 
-            if (0 < bytes && bytes < (size_t) -2)
-              {
-                int width = wcwidth (wc);
-                if (0 < width)
-                  in_position += width;
-                if (in_position <= out_bound)
-                  {
-                    out_position = in_position;
-                    fwrite (tp0, 1, bytes, stdout);
-                  }
-                text_pointer = tp0 + bytes;
-                break;
-              }
+	    /* If there is room, output the bytes since TP0.  */
+	    if (in_position <= out_bound)
+	      {
+		out_position = in_position;
+		fwrite (tp0, 1, g.len, out);
+	      }
+
+	    text_pointer = tp0 + g.len;
           }
-          FALLTHROUGH;
-        case '\f':
-        case '\v':
-          if (in_position < out_bound)
-            putc (c, out);
           break;
 
-        case ' ': case '!': case '"': case '#': case '%':
+        /* Print width 1.  */
+        case ' ': case '!': case '"': case '#': case '$': case '%':
         case '&': case '\'': case '(': case ')': case '*':
         case '+': case ',': case '-': case '.': case '/':
         case '0': case '1': case '2': case '3': case '4':
         case '5': case '6': case '7': case '8': case '9':
         case ':': case ';': case '<': case '=': case '>':
-        case '?':
+        case '?': case '@':
         case 'A': case 'B': case 'C': case 'D': case 'E':
         case 'F': case 'G': case 'H': case 'I': case 'J':
         case 'K': case 'L': case 'M': case 'N': case 'O':
         case 'P': case 'Q': case 'R': case 'S': case 'T':
         case 'U': case 'V': case 'W': case 'X': case 'Y':
         case 'Z':
-        case '[': case '\\': case ']': case '^': case '_':
+        case '[': case '\\': case ']': case '^': case '_': case '`':
         case 'a': case 'b': case 'c': case 'd': case 'e':
         case 'f': case 'g': case 'h': case 'i': case 'j':
         case 'k': case 'l': case 'm': case 'n': case 'o':
         case 'p': case 'q': case 'r': case 's': case 't':
         case 'u': case 'v': case 'w': case 'x': case 'y':
         case 'z': case '{': case '|': case '}': case '~':
-          /* These characters are printable ASCII characters.  */
-          if (in_position++ < out_bound)
-            {
-              out_position = in_position;
-              putc (c, out);
-            }
-          break;
+	  if (ckd_add (&in_position, in_position, 1))
+	    return out_position;
+	  if (in_position <= out_bound)
+	    {
+	      out_position = in_position;
+	      putc (c, out);
+	    }
+	  break;
+
+	/* Print width 0.  */
+	case '\0': case '\a': case '\f': case '\v':
+	  if (in_position <= out_bound)
+	    putc (c, out);
+	  break;
 
         case '\n':
           return out_position;
@@ -202,9 +214,9 @@ print_1sdiff_line (char const *const *left, char sep,
                    char const *const *right)
 {
   FILE *out = outfile;
-  size_t hw = sdiff_half_width;
-  size_t c2o = sdiff_column2_offset;
-  size_t col = 0;
+  intmax_t hw = sdiff_half_width;
+  intmax_t c2o = sdiff_column2_offset;
+  intmax_t col = 0;
   bool put_newline = false;
   bool color_to_reset = false;
 
@@ -227,7 +239,7 @@ print_1sdiff_line (char const *const *left, char sep,
 
   if (sep != ' ')
     {
-      col = tab_from_to (col, (hw + c2o - 1) / 2) + 1;
+      col = tab_from_to (col, (hw + c2o - 1) >> 1) + 1;
       if (sep == '|' && put_newline != (right[1][-1] == '\n'))
         sep = put_newline ? '/' : '\\';
       putc (sep, out);
@@ -264,13 +276,13 @@ print_sdiff_common_lines (lin limit0, lin limit1)
       if (!left_column)
         {
           while (i0 != limit0 && i1 != limit1)
-            print_1sdiff_line (&files[0].linbuf[i0++], ' ',
-                               &files[1].linbuf[i1++]);
+	    print_1sdiff_line (&curr.file[0].linbuf[i0++], ' ',
+			       &curr.file[1].linbuf[i1++]);
           while (i1 != limit1)
-            print_1sdiff_line (0, ')', &files[1].linbuf[i1++]);
+	    print_1sdiff_line (0, ')', &curr.file[1].linbuf[i1++]);
         }
       while (i0 != limit0)
-        print_1sdiff_line (&files[0].linbuf[i0++], '(', 0);
+	print_1sdiff_line (&curr.file[0].linbuf[i0++], '(', 0);
     }
 
   next0 = limit0;
@@ -284,10 +296,8 @@ print_sdiff_common_lines (lin limit0, lin limit1)
 static void
 print_sdiff_hunk (struct change *hunk)
 {
-  lin first0, last0, first1, last1;
-  register lin i, j;
-
   /* Determine range of line numbers involved in each file.  */
+  lin first0, last0, first1, last1;
   enum changes changes =
     analyze_hunk (hunk, &first0, &last0, &first1, &last1);
   if (!changes)
@@ -304,8 +314,10 @@ print_sdiff_hunk (struct change *hunk)
   /* Print "xxx  |  xxx " lines.  */
   if (changes == CHANGED)
     {
+      lin i, j;
       for (i = first0, j = first1;  i <= last0 && j <= last1;  i++, j++)
-        print_1sdiff_line (&files[0].linbuf[i], '|', &files[1].linbuf[j]);
+	print_1sdiff_line (&curr.file[0].linbuf[i], '|',
+			   &curr.file[1].linbuf[j]);
       changes = (i <= last0 ? OLD : 0) + (j <= last1 ? NEW : 0);
       next0 = first0 = i;
       next1 = first1 = j;
@@ -314,16 +326,18 @@ print_sdiff_hunk (struct change *hunk)
   /* Print "     >  xxx " lines.  */
   if (changes & NEW)
     {
+      lin j;
       for (j = first1; j <= last1; ++j)
-        print_1sdiff_line (0, '>', &files[1].linbuf[j]);
+	print_1sdiff_line (0, '>', &curr.file[1].linbuf[j]);
       next1 = j;
     }
 
   /* Print "xxx  <     " lines.  */
   if (changes & OLD)
     {
+      lin i;
       for (i = first0; i <= last0; ++i)
-        print_1sdiff_line (&files[0].linbuf[i], '<', 0);
+	print_1sdiff_line (&curr.file[0].linbuf[i], '<', 0);
       next0 = i;
     }
 }

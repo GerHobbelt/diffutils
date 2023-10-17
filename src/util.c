@@ -1,7 +1,7 @@
 /* Support routines for GNU DIFF.
 
    Copyright (C) 1988-1989, 1992-1995, 1998, 2001-2002, 2004, 2006, 2009-2013,
-   2015-2022 Free Software Foundation, Inc.
+   2015-2023 Free Software Foundation, Inc.
 
    This file is part of GNU DIFF.
 
@@ -21,10 +21,12 @@
 #include "diff.h"
 
 #include <argmatch.h>
-#include <die.h>
+#include <diagnose.h>
 #include <dirname.h>
 #include <error.h>
 #include <flexmember.h>
+#include <mcel.h>
+#include <quotearg.h>
 #include <system-quote.h>
 #include <xalloc.h>
 
@@ -44,6 +46,12 @@
 #ifndef SA_RESTART
 # define SA_RESTART 0
 #endif
+#ifndef SIGSTOP
+# define SIGSTOP 0
+#endif
+#ifndef SIGTSTP
+# define SIGTSTP 0
+#endif
 
 char const pr_program[] = PR_PROGRAM;
 
@@ -58,7 +66,7 @@ struct msg
   char const *msgid;
 
   /* Number of bytes in ARGS.  */
-  size_t argbytes;
+  idx_t argbytes;
 
   /* Arg strings, each '\0' terminated, concatenated.  */
   char args[FLEXIBLE_ARRAY_MEMBER];
@@ -78,7 +86,7 @@ static struct msg **msg_chain_end = &msg_chain;
 void
 perror_with_name (char const *name)
 {
-  error (0, errno, "%s", name);
+  error (0, errno, "%s", squote (0, name));
 }
 
 /* Use when a system call returns non-zero status and that is fatal.  */
@@ -88,7 +96,7 @@ pfatal_with_name (char const *name)
 {
   int e = errno;
   print_message_queue ();
-  die (EXIT_TROUBLE, e, "%s", name);
+  error (EXIT_TROUBLE, e, "%s", name);
 }
 
 /* Print an error message containing MSGID, then exit.  */
@@ -97,7 +105,7 @@ void
 fatal (char const *msgid)
 {
   print_message_queue ();
-  die (EXIT_TROUBLE, 0, "%s", _(msgid));
+  error (EXIT_TROUBLE, 0, "%s", _(msgid));
 }
 
 /* Like printf, except if -l in effect then save the message and print later.
@@ -112,7 +120,7 @@ message (char const *format_msgid, ...)
 
   if (paginate)
     {
-      size_t argbytes = 0;
+      idx_t argbytes = 0;
 
       for (char const *m = format_msgid; *m; m++)
 	if (*m == '%')
@@ -140,7 +148,7 @@ message (char const *format_msgid, ...)
 	  }
 
       *msg_chain_end = new;
-      new->next = 0;
+      new->next = nullptr;
       msg_chain_end = &new->next;
     }
   else
@@ -163,22 +171,20 @@ print_message_queue (void)
       /* Change this if diff ever has messages with more than 4 args.  */
       char const *p = m->args;
       char const *plim = p + m->argbytes;
-      char const *arg[4];
-      for (int i = 0; i < 4; i++)
-	{
-	  arg[i] = p;
-	  if (p < plim)
-	    p += strlen (p) + 1;
-	}
-      printf (_(m->msgid), arg[0], arg[1], arg[2], arg[3]);
-      if (p < plim)
-	abort ();
+      /* Unroll the loop to work around GCC 12 bug with
+	 -Wanalyzer-use-of-uninitialized-value.  */
+      char const *arg0 = p; p += p < plim ? strlen (p) + 1 : 0;
+      char const *arg1 = p; p += p < plim ? strlen (p) + 1 : 0;
+      char const *arg2 = p; p += p < plim ? strlen (p) + 1 : 0;
+      char const *arg3 = p; p += p < plim ? strlen (p) + 1 : 0;
+      printf (_(m->msgid), arg0, arg1, arg2, arg3);
+      dassert (plim <= p);
       struct msg *next = m->next;
       free (m);
       m = next;
     }
 }
-
+
 /* Signal handling, needed for restoring default colors.  */
 
 static void
@@ -194,7 +200,7 @@ xsigismember (sigset_t const *set, int sig)
   int mem = sigismember (set, sig);
   if (mem < 0)
     pfatal_with_name ("sigismember");
-  assume (mem == 1);
+  assume (mem <= 1);
   return mem;
 }
 
@@ -288,7 +294,7 @@ process_signals (void)
       /* Exit or suspend the program.  */
       if (raise (sig) != 0)
 	pfatal_with_name ("raise");
-      xsigprocmask (SIG_SETMASK, &oldset, NULL);
+      xsigprocmask (SIG_SETMASK, &oldset, nullptr);
 
       /* If execution reaches here, then the program has been
          continued (after being suspended).  */
@@ -299,7 +305,7 @@ process_signals (void)
    and which of them are actually caught.  */
 static int const sig[] =
   {
-#ifdef SIGTSTP
+#if SIGTSTP
     /* This one is handled specially; see is_tstp_index.  */
     SIGTSTP,
 #endif
@@ -308,7 +314,13 @@ static int const sig[] =
 #ifdef SIGALRM
     SIGALRM,
 #endif
-    SIGHUP, SIGINT, SIGPIPE,
+#ifdef SIGHUP
+    SIGHUP,
+#endif
+    SIGINT,
+#ifdef SIGPIPE
+    SIGPIPE,
+#endif
 #ifdef SIGQUIT
     SIGQUIT,
 #endif
@@ -335,11 +347,7 @@ enum { nsigs = sizeof (sig) / sizeof *(sig) };
 static bool
 is_tstp_index (int j)
 {
-#ifdef SIGTSTP
-  return j == 0;
-#else
-  return false;
-#endif
+  return SIGTSTP && j == 0;
 }
 
 static void
@@ -352,7 +360,7 @@ install_signal_handlers (void)
   for (int j = 0; j < nsigs; j++)
     {
       struct sigaction actj;
-      if (sigaction (sig[j], NULL, &actj) == 0 && actj.sa_handler != SIG_IGN)
+      if (sigaction (sig[j], nullptr, &actj) == 0 && actj.sa_handler != SIG_IGN)
 	xsigaddset (&caught_signals, sig[j]);
     }
 
@@ -364,7 +372,7 @@ install_signal_handlers (void)
     if (xsigismember (&caught_signals, sig[j]))
       {
 	act.sa_handler = is_tstp_index (j) ? stophandler : sighandler;
-	if (sigaction (sig[j], &act, NULL) != 0)
+	if (sigaction (sig[j], &act, nullptr) != 0)
 	  pfatal_with_name ("sigaction");
 	some_signals_caught = true;
       }
@@ -399,16 +407,15 @@ cleanup_signal_handlers (void)
     }
 }
 
-static char const *current_name0;
-static char const *current_name1;
+static char const *current_name[2];
 static bool currently_recursive;
 static bool colors_enabled;
 
-static struct color_ext_type *color_ext_list = NULL;
+static struct color_ext_type *color_ext_list = nullptr;
 
 struct bin_str
   {
-    size_t len;			/* Number of bytes */
+    idx_t len;			/* Number of bytes */
     const char *string;		/* Pointer to the same */
   };
 
@@ -434,23 +441,18 @@ struct color_ext_type
 
 static bool
 get_funky_string (char **dest, const char **src, bool equals_end,
-                  size_t *output_count)
+                  idx_t *output_count)
 {
-  char num;			/* For numerical codes */
-  size_t count;			/* Something to count with */
   enum {
     ST_GND, ST_BACKSLASH, ST_OCTAL, ST_HEX, ST_CARET, ST_END, ST_ERROR
-  } state;
-  const char *p;
-  char *q;
+  } state = ST_GND;
 
-  p = *src;			/* We don't want to double-indirect */
-  q = *dest;			/* the whole darn time.  */
+  char const *p = *src;		/* We don't want to double-indirect */
+  char *q = *dest;		/* the whole darn time.  */
 
-  count = 0;			/* No characters counted in yet.  */
-  num = 0;
+  idx_t count = 0;		/* No characters counted in yet.  */
+  char num = 0;			/* For numerical codes.  */
 
-  state = ST_GND;		/* Start in ground state.  */
   while (state < ST_END)
     {
       switch (state)
@@ -616,7 +618,7 @@ get_funky_string (char **dest, const char **src, bool equals_end,
           break;
 
         default:
-          abort ();
+	  unreachable ();
         }
     }
 
@@ -643,7 +645,7 @@ static struct bin_str color_indicator[] =
   {
     { LEN_STR_PAIR ("\033[") },		/* lc: Left of color sequence */
     { LEN_STR_PAIR ("m") },		/* rc: Right of color sequence */
-    { 0, NULL },			/* ec: End color (replaces lc+rs+rc) */
+    { 0, nullptr },			/* ec: End color (replaces lc+rs+rc) */
     { LEN_STR_PAIR ("0") },		/* rs: Reset to ordinary colors */
     { LEN_STR_PAIR ("1") },		/* hd: Header */
     { LEN_STR_PAIR ("32") },		/* ad: Add line */
@@ -653,7 +655,7 @@ static struct bin_str color_indicator[] =
 
 static const char *const indicator_name[] =
   {
-    "lc", "rc", "ec", "rs", "hd", "ad", "de", "ln", NULL
+    "lc", "rc", "ec", "rs", "hd", "ad", "de", "ln", nullptr
   };
 ARGMATCH_VERIFY (indicator_name, color_indicator);
 
@@ -668,23 +670,19 @@ set_color_palette (char const *palette)
 static void
 parse_diff_color (void)
 {
-  char *color_buf;
-  const char *p;		/* Pointer to character being parsed */
-  char *buf;			/* color_buf buffer pointer */
-  int ind_no;			/* Indicator number */
-  char label[] = "??";		/* Indicator label */
-  struct color_ext_type *ext;	/* Extension we are working on */
-
-  if ((p = color_palette) == NULL || *p == '\0')
+  char const *p = color_palette;
+  if (p == nullptr || *p == '\0')
     return;
 
-  ext = NULL;
+  char label[] = "??";		/* Indicator label */
+  struct color_ext_type *ext = nullptr;	/* Extension we are working on */
 
   /* This is an overly conservative estimate, but any possible
      --palette string will *not* generate a color_buf longer than
      itself, so it is a safe way of allocating a buffer in
      advance.  */
-  buf = color_buf = xstrdup (p);
+  char *color_buf = xstrdup (p);
+  char *buf = color_buf;
 
   enum parse_state state = PS_START;
   while (true)
@@ -740,7 +738,7 @@ parse_diff_color (void)
           state = PS_FAIL;	/* Assume failure...  */
           if (*(p++) == '=')/* It *should* be...  */
             {
-              for (ind_no = 0; indicator_name[ind_no] != NULL; ++ind_no)
+              for (int ind_no = 0; indicator_name[ind_no] != nullptr; ind_no++)
                 {
                   if (STREQ (label, indicator_name[ind_no]))
                     {
@@ -771,24 +769,21 @@ parse_diff_color (void)
           goto done;
 
         default:
-          abort ();
+	  unreachable ();
         }
     }
  done:
 
   if (state == PS_FAIL)
     {
-      struct color_ext_type *e;
-      struct color_ext_type *e2;
-
       error (0, 0,
              _("unparsable value for --palette"));
       free (color_buf);
-      for (e = color_ext_list; e != NULL; /* empty */)
+      for (struct color_ext_type *e = color_ext_list; e != nullptr; )
         {
-          e2 = e;
-          e = e->next;
-          free (e2);
+          struct color_ext_type *next = e->next;
+          free (e);
+          e = next;
         }
       colors_enabled = false;
     }
@@ -824,119 +819,38 @@ check_color_output (bool is_pipe)
 void
 setup_output (char const *name0, char const *name1, bool recursive)
 {
-  current_name0 = name0;
-  current_name1 = name1;
+  current_name[0] = name0;
+  current_name[1] = name1;
   currently_recursive = recursive;
-  outfile = 0;
+  outfile = nullptr;
 }
 
 #if HAVE_WORKING_FORK
 static pid_t pr_pid;
 #endif
 
-static char c_escape_char (char c)
-{
-  switch (c) {
-    case '\a': return 'a';
-    case '\b': return 'b';
-    case '\t': return 't';
-    case '\n': return 'n';
-    case '\v': return 'v';
-    case '\f': return 'f';
-    case '\r': return 'r';
-    case '"': return '"';
-    case '\\': return '\\';
-    default:
-      return c < 32;
-  }
-}
-
-static char *
-c_escape (char const *str)
-{
-  char const *s;
-  size_t plus = 0;
-  bool must_quote = false;
-
-  for (s = str; *s; s++)
-    {
-      char c = *s;
-
-      if (c == ' ')
-        {
-          must_quote = true;
-          continue;
-        }
-      switch (c_escape_char (*s))
-        {
-          case 1:
-            plus += 3;
-            /* fall through */
-          case 0:
-            break;
-          default:
-            plus++;
-            break;
-        }
-    }
-
-  if (must_quote || plus)
-    {
-      size_t s_len = s - str;
-      char *buffer = xmalloc (s_len + plus + 3);
-      char *b = buffer;
-
-      *b++ = '"';
-      for (s = str; *s; s++)
-        {
-          char c = *s;
-          char escape = c_escape_char (c);
-
-          switch (escape)
-            {
-              case 0:
-                *b++ = c;
-                break;
-              case 1:
-                *b++ = '\\';
-                *b++ = ((c >> 6) & 03) + '0';
-                *b++ = ((c >> 3) & 07) + '0';
-                *b++ = ((c >> 0) & 07) + '0';
-                break;
-              default:
-                *b++ = '\\';
-                *b++ = escape;
-                break;
-            }
-        }
-      *b++ = '"';
-      *b = 0;
-      return buffer;
-    }
-
-  return (char *) str;
-}
-
+
 void
 begin_output (void)
 {
-  char *names[2];
-  char *name;
-
-  if (outfile != 0)
+  if (outfile)
     return;
 
-  names[0] = c_escape (current_name0);
-  names[1] = c_escape (current_name1);
+  char const *names[2];
+  for (int f = 0; f < 2; f++)
+    names[f] = quotearg_n_style (f,
+				 (strchr (current_name[f], ' ')
+				  ? c_quoting_style : c_maybe_quoting_style),
+				 current_name[f]);
 
   /* Construct the header of this piece of diff.  */
-  /* POSIX 1003.1-2001 specifies this format.  But there are some bugs in
+  /* POSIX 1003.1-2017 specifies this format.  But there are some bugs in
      the standard: it says that we must print only the last component
      of the pathnames, and it requires two spaces after "diff" if
      there are no options.  These requirements are silly and do not
      match historical practice.  */
-  name = xmalloc (sizeof "diff" + strlen (switch_string)
-		  + 1 + strlen (names[0]) + 1 + strlen (names[1]));
+  char *name = xmalloc (sizeof "diff" + strlen (switch_string)
+			+ 1 + strlen (names[0]) + 1 + strlen (names[1]));
   char *p = stpcpy (name, "diff");
   p = stpcpy (p, switch_string);
   *p++ = ' ';
@@ -946,59 +860,51 @@ begin_output (void)
 
   if (paginate)
     {
-      char const *argv[4];
-
       if (fflush (stdout) != 0)
         pfatal_with_name (_("write failed"));
 
-      argv[0] = pr_program;
-      argv[1] = "-h";
-      argv[2] = name;
-      argv[3] = 0;
+      char const *argv[4] = {pr_program, "-h", name, nullptr };
 
       /* Make OUTFILE a pipe to a subsidiary 'pr'.  */
-      {
 #if HAVE_WORKING_FORK
-        int pipes[2];
+      int pipes[2];
+      if (pipe (pipes) != 0)
+	pfatal_with_name ("pipe");
 
-        if (pipe (pipes) != 0)
-          pfatal_with_name ("pipe");
+      pr_pid = fork ();
+      if (pr_pid < 0)
+	pfatal_with_name ("fork");
 
-        pr_pid = fork ();
-        if (pr_pid < 0)
-          pfatal_with_name ("fork");
+      if (pr_pid == 0)
+	{
+	  close (pipes[1]);
+	  if (pipes[0] != STDIN_FILENO)
+	    {
+	      if (dup2 (pipes[0], STDIN_FILENO) < 0)
+		pfatal_with_name ("dup2");
+	      close (pipes[0]);
+	    }
 
-        if (pr_pid == 0)
-          {
-            close (pipes[1]);
-            if (pipes[0] != STDIN_FILENO)
-              {
-                if (dup2 (pipes[0], STDIN_FILENO) < 0)
-                  pfatal_with_name ("dup2");
-                close (pipes[0]);
-              }
-
-            execv (pr_program, (char **) argv);
-            _exit (errno == ENOENT ? 127 : 126);
-          }
-        else
-          {
-            close (pipes[0]);
-            outfile = fdopen (pipes[1], "w");
-            if (!outfile)
-              pfatal_with_name ("fdopen");
-            check_color_output (true);
-          }
+	  execv (pr_program, (char **) argv);
+	  _exit (errno == ENOENT ? 127 : 126);
+	}
+      else
+	{
+	  close (pipes[0]);
+	  outfile = fdopen (pipes[1], "w");
+	  if (!outfile)
+	    pfatal_with_name ("fdopen");
+	  check_color_output (true);
+	}
 #else
-        char *command = system_quote_argv (SCI_SYSTEM, (char **) argv);
-        errno = 0;
-        outfile = popen (command, "w");
-        if (!outfile)
-          pfatal_with_name (command);
-        check_color_output (true);
-        free (command);
+      char *command = system_quote_argv (SCI_SYSTEM, (char **) argv);
+      errno = 0;
+      outfile = popen (command, "w");
+      if (!outfile)
+	pfatal_with_name (command);
+      check_color_output (true);
+      free (command);
 #endif
-      }
     }
   else
     {
@@ -1011,30 +917,15 @@ begin_output (void)
       /* If handling multiple files (because scanning a directory),
          print which files the following output is about.  */
       if (currently_recursive)
-        printf ("%s\n", name);
+        puts (name);
     }
 
   free (name);
 
   /* A special header is needed at the beginning of context output.  */
-  switch (output_style)
-    {
-    case OUTPUT_CONTEXT:
-      print_context_header (files, (char const *const *)names, false);
-      break;
-
-    case OUTPUT_UNIFIED:
-      print_context_header (files, (char const *const *)names, true);
-      break;
-
-    default:
-      break;
-    }
-
-  if (names[0] != current_name0)
-    free (names[0]);
-  if (names[1] != current_name1)
-    free (names[1]);
+  if (output_style == OUTPUT_CONTEXT || output_style == OUTPUT_UNIFIED)
+    print_context_header (curr.file, names,
+			  output_style == OUTPUT_UNIFIED);
 }
 
 /* Call after the end of output of diffs for one file.
@@ -1043,9 +934,8 @@ begin_output (void)
 void
 finish_output (void)
 {
-  if (outfile != 0 && outfile != stdout)
+  if (outfile && outfile != stdout)
     {
-      int status;
       int wstatus;
       int werrno = 0;
       if (ferror (outfile))
@@ -1060,201 +950,31 @@ finish_output (void)
       if (waitpid (pr_pid, &wstatus, 0) < 0)
         pfatal_with_name ("waitpid");
 #endif
-      status = (! werrno && WIFEXITED (wstatus)
-                ? WEXITSTATUS (wstatus)
-                : INT_MAX);
+      int status = (! werrno && WIFEXITED (wstatus)
+		    ? WEXITSTATUS (wstatus)
+		    : INT_MAX);
       if (status)
-        die (EXIT_TROUBLE, werrno,
+        error (EXIT_TROUBLE, werrno,
                _(status == 126
-                 ? "subsidiary program '%s' could not be invoked"
+		 ? "subsidiary program %s could not be invoked"
                  : status == 127
-                 ? "subsidiary program '%s' not found"
+		 ? "subsidiary program %s not found"
                  : status == INT_MAX
-                 ? "subsidiary program '%s' failed"
-                 : "subsidiary program '%s' failed (exit status %d)"),
-               pr_program, status);
+		 ? "subsidiary program %s failed"
+		 : "subsidiary program %s failed (exit status %d)"),
+	       quote (pr_program), status);
     }
 
-  outfile = 0;
-}
-
-/* Compare two lines (typically one from each input file)
-   according to the command line options.
-   For efficiency, this is invoked only when the lines do not match exactly
-   but an option like -i might cause us to ignore the difference.
-   Return nonzero if the lines differ.  */
-
-bool
-lines_differ (char const *s1, char const *s2)
-{
-  register char const *t1 = s1;
-  register char const *t2 = s2;
-  size_t column = 0;
-
-  while (1)
-    {
-      register unsigned char c1 = *t1++;
-      register unsigned char c2 = *t2++;
-
-      /* Test for exact char equality first, since it's a common case.  */
-      if (c1 != c2)
-        {
-          switch (ignore_white_space)
-            {
-            case IGNORE_ALL_SPACE:
-              /* For -w, just skip past any white space.  */
-              while (isspace (c1) && c1 != '\n') c1 = *t1++;
-              while (isspace (c2) && c2 != '\n') c2 = *t2++;
-              break;
-
-            case IGNORE_SPACE_CHANGE:
-              /* For -b, advance past any sequence of white space in
-                 line 1 and consider it just one space, or nothing at
-                 all if it is at the end of the line.  */
-              if (isspace (c1))
-                {
-                  while (c1 != '\n')
-                    {
-                      c1 = *t1++;
-                      if (! isspace (c1))
-                        {
-                          --t1;
-                          c1 = ' ';
-                          break;
-                        }
-                    }
-                }
-
-              /* Likewise for line 2.  */
-              if (isspace (c2))
-                {
-                  while (c2 != '\n')
-                    {
-                      c2 = *t2++;
-                      if (! isspace (c2))
-                        {
-                          --t2;
-                          c2 = ' ';
-                          break;
-                        }
-                    }
-                }
-
-              if (c1 != c2)
-                {
-                  /* If we went too far when doing the simple test
-                     for equality, go back to the first non-white-space
-                     character in both sides and try again.  */
-                  if (c2 == ' ' && c1 != '\n'
-                      && s1 + 1 < t1
-                      && isspace ((unsigned char) t1[-2]))
-                    {
-                      --t1;
-                      continue;
-                    }
-                  if (c1 == ' ' && c2 != '\n'
-                      && s2 + 1 < t2
-                      && isspace ((unsigned char) t2[-2]))
-                    {
-                      --t2;
-                      continue;
-                    }
-                }
-
-              break;
-
-            case IGNORE_TRAILING_SPACE:
-            case IGNORE_TAB_EXPANSION_AND_TRAILING_SPACE:
-              if (isspace (c1) && isspace (c2))
-                {
-                  unsigned char c;
-                  if (c1 != '\n')
-                    {
-                      char const *p = t1;
-                      while ((c = *p) != '\n' && isspace (c))
-                        ++p;
-                      if (c != '\n')
-                        break;
-                    }
-                  if (c2 != '\n')
-                    {
-                      char const *p = t2;
-                      while ((c = *p) != '\n' && isspace (c))
-                        ++p;
-                      if (c != '\n')
-                        break;
-                    }
-                  /* Both lines have nothing but whitespace left.  */
-                  return false;
-                }
-              if (ignore_white_space == IGNORE_TRAILING_SPACE)
-                break;
-              FALLTHROUGH;
-            case IGNORE_TAB_EXPANSION:
-              if ((c1 == ' ' && c2 == '\t')
-                  || (c1 == '\t' && c2 == ' '))
-                {
-                  size_t column2 = column;
-                  for (;; c1 = *t1++)
-                    {
-                      if (c1 == ' ')
-                        column++;
-                      else if (c1 == '\t')
-                        column += tabsize - column % tabsize;
-                      else
-                        break;
-                    }
-                  for (;; c2 = *t2++)
-                    {
-                      if (c2 == ' ')
-                        column2++;
-                      else if (c2 == '\t')
-                        column2 += tabsize - column2 % tabsize;
-                      else
-                        break;
-                    }
-                  if (column != column2)
-                    return true;
-                }
-              break;
-
-            case IGNORE_NO_WHITE_SPACE:
-              break;
-            }
-
-          /* Lowercase all letters if -i is specified.  */
-
-          if (ignore_case)
-            {
-              c1 = tolower (c1);
-              c2 = tolower (c2);
-            }
-
-          if (c1 != c2)
-            break;
-        }
-      if (c1 == '\n')
-        return false;
-
-      column += c1 == '\t' ? tabsize - column % tabsize : 1;
-    }
-
-  return true;
+  outfile = nullptr;
 }
 
 /* Find the consecutive changes at the start of the script START.
    Return the last link before the first gap.  */
 
-struct change * ATTRIBUTE_CONST
-find_change (struct change *start)
+struct change *
+find_change (struct change *script)
 {
-  return start;
-}
-
-struct change * ATTRIBUTE_CONST
-find_reverse_change (struct change *start)
-{
-  return start;
+  return script;
 }
 
 /* Divide SCRIPT into pieces by calling HUNKFUN and
@@ -1277,16 +997,14 @@ print_script (struct change *script,
 
   while (next)
     {
-      struct change *this, *end;
-
       /* Find a set of changes that belong together.  */
-      this = next;
-      end = (*hunkfun) (next);
+      struct change *this = next;
+      struct change *end = (*hunkfun) (next);
 
       /* Disconnect them from the rest of the changes,
          making them a hunk, and remember the rest for next iteration.  */
       next = end->link;
-      end->link = 0;
+      end->link = nullptr;
 #ifdef DEBUG
       debug_script (this);
 #endif
@@ -1321,7 +1039,7 @@ print_1_line_nl (char const *line_flag, char const *const *line, bool skip_nl)
 {
   char const *base = line[0], *limit = line[1]; /* Help the compiler.  */
   FILE *out = outfile; /* Help the compiler some more.  */
-  char const *flag_format = 0;
+  char const *flag_format = nullptr;
 
   /* If -T was specified, use a Tab between the line-flag and the text.
      Otherwise use a Space (as Unix diff does).
@@ -1364,29 +1082,27 @@ void
 output_1_line (char const *base, char const *limit, char const *flag_format,
                char const *line_flag)
 {
-  const size_t MAX_CHUNK = 1024;
+  enum { MAX_CHUNK = 1024 };
   if (!expand_tabs)
     {
-      size_t left = limit - base;
+      idx_t left = limit - base;
       while (left)
         {
-          size_t to_write = MIN (left, MAX_CHUNK);
-          size_t written = fwrite (base, sizeof (char), to_write, outfile);
+          idx_t to_write = MIN (left, MAX_CHUNK);
+          idx_t written = fwrite (base, sizeof (char), to_write, outfile);
+          process_signals ();
           if (written < to_write)
             return;
           base += written;
           left -= written;
-          process_signals ();
         }
     }
   else
     {
-      register FILE *out = outfile;
-      register unsigned char c;
-      register char const *t = base;
-      register size_t column = 0;
-      size_t tab_size = tabsize;
-      size_t counter_proc_signals = 0;
+      FILE *out = outfile;
+      char const *t = base;
+      intmax_t tab = 0, column = 0, tab_size = tabsize;
+      int counter_proc_signals = 0;
 
       while (t < limit)
         {
@@ -1397,35 +1113,52 @@ output_1_line (char const *base, char const *limit, char const *flag_format,
               counter_proc_signals = 0;
             }
 
-          switch ((c = *t++))
+	  switch (*t)
             {
             case '\t':
-              {
-                size_t spaces = tab_size - column % tab_size;
-                column += spaces;
-                do
-                  putc (' ', out);
-                while (--spaces);
-              }
+	      t++;
+	      do
+		if (putc (' ', out) < 0)
+		  return;
+	      while (++column < tab_size);
+
+	      tab++;
+	      column = 0;
               break;
 
             case '\r':
-              putc (c, out);
+	      t++;
+	      if (putc ('\r', out) < 0)
+		return;
               if (flag_format && t < limit && *t != '\n')
-                fprintf (out, flag_format, line_flag);
-              column = 0;
+		if (fprintf (out, flag_format, line_flag) < 0)
+		  return;
+              tab = column = 0;
               break;
 
             case '\b':
-              if (column == 0)
-                continue;
-              column--;
-              putc (c, out);
+	      t++;
+	      if (0 < column)
+		column--;
+	      else if (0 < tab)
+		{
+		  tab--;
+		  column = tab_size - 1;
+		}
+	      else
+		continue;
+	      if (putc ('\b', out) < 0)
+		return;
               break;
 
-            default:
-              column += isprint (c) != 0;
-              putc (c, out);
+            default:;
+	      mcel_t g = mcel_scan (t, limit);
+	      column += g.err ? 1 : c32isprint (g.ch) ? c32width (g.ch) : 0;
+	      tab += column / tab_size;
+	      column %= tab_size;
+	      if (fwrite (t, sizeof *t, g.len, outfile) != g.len)
+		return;
+	      t += g.len;
               break;
             }
         }
@@ -1476,7 +1209,7 @@ set_color_context (enum color_context color_context)
           break;
 
         default:
-          abort ();
+          unreachable ();
         }
       put_indicator (&color_indicator[C_RIGHT]);
       last_context = color_context;
@@ -1484,7 +1217,7 @@ set_color_context (enum color_context color_context)
 }
 
 
-char const change_letter[] = { 0, 'd', 'a', 'c' };
+char const change_letter[] = { '\0', 'd', 'a', 'c' };
 
 /* Translate an internal line number (an index into diff's table of lines)
    into an actual line number in the input file.
@@ -1493,7 +1226,7 @@ char const change_letter[] = { 0, 'd', 'a', 'c' };
    Internal line numbers count from 0 starting after the prefix.
    Actual line numbers count from 1 within the entire file.  */
 
-lin ATTRIBUTE_PURE
+lin
 translate_line_number (struct file_data const *file, lin i)
 {
   return i + file->prefix_lines + 1;
@@ -1549,29 +1282,27 @@ analyze_hunk (struct change *hunk,
               lin *first0, lin *last0,
               lin *first1, lin *last1)
 {
-  struct change *next;
-  lin l0, l1;
-  lin show_from, show_to;
-  lin i;
   bool trivial = ignore_blank_lines || ignore_regexp.fastmap;
-  size_t trivial_length = ignore_blank_lines - 1;
+  int trivial_length = ignore_blank_lines - 1;
     /* If 0, ignore zero-length lines;
-       if SIZE_MAX, do not ignore lines just because of their length.  */
+       if -1, do not ignore lines just because of their length.  */
 
   bool skip_white_space =
     ignore_blank_lines && IGNORE_TRAILING_SPACE <= ignore_white_space;
   bool skip_leading_white_space =
     skip_white_space && IGNORE_SPACE_CHANGE <= ignore_white_space;
 
-  char const * const *linbuf0 = files[0].linbuf;  /* Help the compiler.  */
-  char const * const *linbuf1 = files[1].linbuf;
+  /* Help the compiler.  */
+  char const *const *linbuf0 = curr.file[0].linbuf;
+  char const *const *linbuf1 = curr.file[1].linbuf;
 
-  show_from = show_to = 0;
+  lin show_from = 0, show_to = 0;
 
   *first0 = hunk->line0;
   *first1 = hunk->line1;
 
-  next = hunk;
+  struct change *next = hunk;
+  lin l0, l1;
   do
     {
       l0 = next->line0 + next->deleted - 1;
@@ -1579,49 +1310,59 @@ analyze_hunk (struct change *hunk,
       show_from += next->deleted;
       show_to += next->inserted;
 
-      for (i = next->line0; i <= l0 && trivial; i++)
+      for (lin i = next->line0; i <= l0 && trivial; i++)
         {
           char const *line = linbuf0[i];
           char const *lastbyte = linbuf0[i + 1] - 1;
           char const *newline = lastbyte + (*lastbyte != '\n');
-          size_t len = newline - line;
+          idx_t len = newline - line;
           char const *p = line;
           if (skip_white_space)
-            for (; *p != '\n'; p++)
-              if (! isspace ((unsigned char) *p))
-                {
-                  if (! skip_leading_white_space)
-                    p = line;
-                  break;
-                }
+            while (*p != '\n')
+	      {
+		mcel_t g = mcel_scan (p, newline);
+		if (! c32isspace (g.ch))
+		  {
+		    if (! skip_leading_white_space)
+		      p = line;
+		    break;
+		  }
+		p += g.len;
+	      }
           if (newline - p != trivial_length
               && (! ignore_regexp.fastmap
-                  || re_search (&ignore_regexp, line, len, 0, len, 0) < 0))
-            trivial = 0;
+                  || (re_search (&ignore_regexp, line, len, 0, len, nullptr)
+		      < 0)))
+            trivial = false;
         }
 
-      for (i = next->line1; i <= l1 && trivial; i++)
+      for (lin i = next->line1; i <= l1 && trivial; i++)
         {
           char const *line = linbuf1[i];
           char const *lastbyte = linbuf1[i + 1] - 1;
           char const *newline = lastbyte + (*lastbyte != '\n');
-          size_t len = newline - line;
+          idx_t len = newline - line;
           char const *p = line;
           if (skip_white_space)
-            for (; *p != '\n'; p++)
-              if (! isspace ((unsigned char) *p))
-                {
-                  if (! skip_leading_white_space)
-                    p = line;
-                  break;
-                }
+            while (*p != '\n')
+	      {
+		mcel_t g = mcel_scan (p, newline);
+		if (! c32isspace (g.ch))
+		  {
+		    if (! skip_leading_white_space)
+		      p = line;
+		    break;
+		  }
+		p += g.len;
+	      }
           if (newline - p != trivial_length
               && (! ignore_regexp.fastmap
-                  || re_search (&ignore_regexp, line, len, 0, len, 0) < 0))
-            trivial = 0;
+                  || (re_search (&ignore_regexp, line, len, 0, len, nullptr)
+		      < 0)))
+            trivial = false;
         }
     }
-  while ((next = next->link) != 0);
+  while ((next = next->link));
 
   *last0 = l0;
   *last1 = l1;

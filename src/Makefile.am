@@ -1,6 +1,6 @@
 # Automakefile for GNU diffutils programs.
 
-# Copyright (C) 2001-2002, 2006, 2009-2013, 2015-2022 Free Software Foundation,
+# Copyright (C) 2001-2002, 2006, 2009-2013, 2015-2023 Free Software Foundation,
 # Inc.
 
 # This program is free software: you can redistribute it and/or modify
@@ -26,15 +26,20 @@ AM_CFLAGS = $(WARN_CFLAGS) $(WERROR_CFLAGS)
 LDADD = \
   libver.a \
   ../lib/libdiffutils.a \
+  $(CLOCK_TIME_LIB) \
+  $(HARD_LOCALE_LIB) \
+  $(LIBTHREAD) \
   $(LIBCSTACK) \
   $(LIBINTL) \
-  $(LIBICONV) \
   $(LIBSIGSEGV) \
-  $(LIB_CLOCK_GETTIME)
+  $(LIBUNISTRING) \
+  $(MBRTOWC_LIB) \
+  $(LIBC32CONV) \
+  $(SETLOCALE_NULL_LIB)
 
 diff_LDADD = $(LDADD)
 cmp_LDADD = $(LDADD)
-sdiff_LDADD = $(LDADD)
+sdiff_LDADD = $(LDADD) $(GETRANDOM_LIB)
 diff3_LDADD = $(LDADD)
 
 cmp_SOURCES = cmp.c
@@ -43,10 +48,7 @@ sdiff_SOURCES = sdiff.c
 diff_SOURCES = \
   analyze.c context.c diff.c dir.c ed.c ifdef.c io.c \
   normal.c side.c util.c
-noinst_HEADERS =	\
-  die.h			\
-  diff.h		\
-  system.h
+noinst_HEADERS = diff.h system.h
 
 MOSTLYCLEANFILES = paths.h paths.ht
 

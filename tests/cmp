@@ -1,7 +1,7 @@
 #!/bin/sh
 # Test 'cmp'.
 
-# Copyright 2017-2022 Free Software Foundation, Inc.
+# Copyright 2017-2023 Free Software Foundation, Inc.
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,7 +27,7 @@ cmp a b
 a b differ: char 1, line 1
 1
 cmp a c
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp a d
 cmp: d: No such file or directory
@@ -38,16 +38,16 @@ b a differ: char 1, line 1
 cmp b b
 0
 cmp b c
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp b d
 cmp: d: No such file or directory
 2
 cmp c a
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp c b
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp c c
 0
@@ -72,7 +72,7 @@ cmp -l a b
 1 141 142
 1
 cmp -l a c
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp -l a d
 cmp: d: No such file or directory
@@ -83,16 +83,16 @@ cmp -l b a
 cmp -l b b
 0
 cmp -l b c
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp -l b d
 cmp: d: No such file or directory
 2
 cmp -l c a
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp -l c b
-cmp: EOF on c which is empty
+cmp: EOF on 'c' which is empty
 1
 cmp -l c c
 0
@@ -166,22 +166,22 @@ compare exp out || fail=1
 
 cat <<'EOF' > exp1 || fail=1
 cmp a0 a1
-cmp: EOF on a0 which is empty
+cmp: EOF on 'a0' which is empty
 1
 cmp a1 a2
-cmp: EOF on a1 after byte 2, line 1
+cmp: EOF on 'a1' after byte 2, line 1
 1
 cmp a2 a3
-cmp: EOF on a2 after byte 5, in line 2
+cmp: EOF on 'a2' after byte 5, in line 2
 1
 cmp -l a0 a1
-cmp: EOF on a0 which is empty
+cmp: EOF on 'a0' which is empty
 1
 cmp -l a1 a2
-cmp: EOF on a1 after byte 2
+cmp: EOF on 'a1' after byte 2
 1
 cmp -l a2 a3
-cmp: EOF on a2 after byte 5
+cmp: EOF on 'a2' after byte 5
 1
 cmp -s a0 a1
 1
@@ -227,5 +227,28 @@ EOF
 cmp -bl j1 j2 > out2
 test $? -eq 1 || fail=1
 compare exp2 out2 || fail=1
+
+if (LC_ALL=en_US.iso8859-1 locale charmap) >/dev/null 2>&1; then
+  printf '\200\300\377\n' >j3
+  printf '\0@\177\n' >j4
+  cat <<'EOF' >exp3 || fail=1
+1 200 M-^@   0 ^@
+2 300 M-@  100 @
+3 377 M-^? 177 ^?
+EOF
+  LC_ALL=en_US.iso8859-1 cmp -bl j3 j4 >out3
+  test $? -eq 1 || fail=1
+  compare exp3 out3 || fail=1
+fi
+
+big=99999999999999999999999999999999999999999999999999999999999
+cmp -i $big j1 j2 || fail=1
+cmp -i 1000 -n $big j1 j2 || fail=1
+
+rm -f a b
+if timeout 0.1 true && truncate -s 14T a && truncate -s 15T b; then
+  returns_ 1 timeout 0.1 cmp a b >/dev/null || fail=1
+fi
+rm -f a b
 
 Exit $fail

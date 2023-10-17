@@ -13,12 +13,14 @@
 
 . "${srcdir=.}/init.sh"; path_prepend_ ../src
 
+require_perl_
+
 fail=0
 
 diff -u \
   "$abs_top_srcdir/tests/large-subopt.in1" \
   "$abs_top_srcdir/tests/large-subopt.in2" \
-  | perl -n0 -e \
+  | $PERL -n0 -e \
      '/\n-2\n(\+L: 361\n){2}\+2\n/ and do {$e=1; last}; END{exit !$e}' \
      && fail=1
 

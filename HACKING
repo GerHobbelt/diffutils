@@ -3,14 +3,6 @@ Diffutils Contribution Guidelines
 
 Prerequisites
 =============
-You will need the "git" version control tools.
-On Fedora-based systems, do "yum install git".
-On Debian-based ones install the "git-core" package.
-Then run "git --version".  If that says it's older than
-version 1.4.4, then you'd do well to get a newer version.
-At worst, just download the latest stable release from
-http://git.or.cz/ and build from source.
-
 For details on building the programs in this package, see
 the file, README-hacking.
 
@@ -20,14 +12,11 @@ Use the latest upstream sources
 Base any changes you make on the latest upstream sources.
 You can get a copy of the latest with this command:
 
-    git clone git://git.sv.gnu.org/diffutils
+    git clone https://git.savannah.gnu.org/git/diffutils
 
-That downloads the entire repository, including revision control history
-dating back to 1991.  The repository (the part you download, and which
-resides in diffutils/.git) currently weighs in at about 9MB.  So you don't
-want to download it more often than necessary.  Once downloaded, you
-can get incremental updates by running one of these commands from
-inside your new diffutils/ directory:
+That downloads the entire repository, including revision control history.
+Once downloaded, you can get incremental updates by running one of
+these commands from inside your new diffutils/ directory:
 
 If you have made *no* changes:
     git pull
@@ -94,7 +83,7 @@ Make your changes on a private "topic" branch
 =============================================
 So you checked out diffutils like this:
 
-  git clone git://git.sv.gnu.org/diffutils
+  git clone https://git.savannah.gnu.org/git/diffutils
 
 Now, cd into the diffutils/ directory and run:
 
@@ -438,18 +427,18 @@ The forms to choose from are in gnulib's doc/Copyright/ directory.
 If you want to assign a single change, you should use the file,
 doc/Copyright/request-assign.changes:
 
-    http://git.sv.gnu.org/gitweb/?p=gnulib.git;a=blob;f=doc/Copyright/request-assign.changes;hb=HEAD
+    https://www.gnu.org/software/gnulib/Copyright/request-assign.changes
 
 If you would like to assign past and future contributions to a project,
 you'd use doc/Copyright/request-assign.future:
 
-    http://git.sv.gnu.org/gitweb/?p=gnulib.git;a=blob;f=doc/Copyright/request-assign.future;hb=HEAD
+    https://www.gnu.org/software/gnulib/Copyright/request-assign.future
 
 You may make assignments for up to four projects at a time.
 
 In case you're wondering why we bother with all of this, read this:
 
-    http://www.gnu.org/licenses/why-assign.html
+    https://www.gnu.org/licenses/why-assign.html
 
 
 Run "make syntax-check", or even "make distcheck"
@@ -483,13 +472,11 @@ Do not add any more trailing blanks anywhere.  While "make syntax-check"
 will alert you if you slip up, it's better to nip any problem in the
 bud, as you're typing.  A good way to help you adapt to this rule is
 to configure your editor to highlight any offending characters in the
-files you edit.  If you use Emacs, customize its font-lock mode (FIXME:
-provide more detail) or try one of its whitespace packages.  This appears
-to be the one that will end up in emacs 23:
+files you edit.  If you use Emacs, customize its font-lock mode
+or use its WhiteSpace mode:
 
-    http://www.emacswiki.org/emacs/WhiteSpace
+    https://www.emacswiki.org/emacs/WhiteSpace
 
-[that page says its version also works with emacs 21 and 22]
 If you use vim, add this to ~/.vimrc:
 
     let c_space_errors=1
@@ -581,7 +568,7 @@ Then just open the index.html file (in the generated lcov-html directory)
 in your favorite web browser.
 
 ========================================================================
-Copyright (C) 2009-2013, 2015-2022 Free Software Foundation, Inc.
+Copyright (C) 2009-2013, 2015-2023 Free Software Foundation, Inc.
 
 Permission is granted to copy, distribute and/or modify this document
 under the terms of the GNU Free Documentation License, Version 1.3 or

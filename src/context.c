@@ -1,7 +1,7 @@
 /* Context-format output routines for GNU DIFF.
 
    Copyright (C) 1988-1989, 1991-1995, 1998, 2001-2002, 2004, 2006, 2009-2013,
-   2015-2022 Free Software Foundation, Inc.
+   2015-2023 Free Software Foundation, Inc.
 
    This file is part of GNU DIFF.
 
@@ -19,11 +19,11 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "diff.h"
-#include "c-ctype.h"
+#include <c-ctype.h>
 #include <stat-time.h>
 #include <strftime.h>
 
-static char const *find_function (char const * const *, lin);
+static char const *find_function (char const *const *, lin);
 static struct change *find_hunk (struct change *);
 static void mark_ignorable (struct change *);
 static void pr_context_hunk (struct change *);
@@ -48,31 +48,42 @@ print_context_label (char const *mark,
     fprintf (outfile, "%s %s", mark, label);
   else
     {
-      char buf[MAX (INT_STRLEN_BOUND (int) + 32,
-                    INT_STRLEN_BOUND (time_t) + 11)];
-      struct tm const *tm = localtime (&inf->stat.st_mtime);
-      int nsec = get_stat_mtime_ns (&inf->stat);
-      if (! (tm && nstrftime (buf, sizeof buf, time_format, tm, localtz, nsec)))
+      /* POSIX requires current time for stdin.  */
+      struct timespec ts;
+      if (inf->desc == STDIN_FILENO)
+	{
+	  static struct timespec now;
+	  if (!now.tv_sec)
+	    timespec_get (&now, TIME_UTC);
+	  ts = now;
+	}
+      else
+	ts = get_stat_mtime (&inf->stat);
+
+      /* Buffer for nstftime output, big enough to handle any
+	 timestamp formatted according to time_format.
+	 Its size is an upper bound for the format "%Y-%m-%d %H:%M:%S.%N %z",
+	 with an int for year and a time_t for time zone hour.
+	 The format "%Y-%m-%d %H:%M:%S %z" generates fewer bytes,
+	 and although the format "%a %b %e %T %Y" could in theory
+	 generate more bytes in practice it never does.  */
+      char buf[INT_STRLEN_BOUND (int) + INT_STRLEN_BOUND (time_t)
+	       + sizeof "-%m-%d %H:%M:%S.000000000 +00"];
+
+      struct tm const *tm = localtime (&ts.tv_sec);
+      int nsec = ts.tv_nsec;
+      if (tm && nstrftime (buf, sizeof buf, time_format, tm, localtz, nsec))
+	fprintf (outfile, "%s %s\t%s", mark, name, buf);
+      else if (TYPE_SIGNED (time_t))
         {
-          verify (TYPE_IS_INTEGER (time_t));
-          if (LONG_MIN <= TYPE_MINIMUM (time_t)
-              && TYPE_MAXIMUM (time_t) <= LONG_MAX)
-            {
-              long int sec = inf->stat.st_mtime;
-              sprintf (buf, "%ld.%.9d", sec, nsec);
-            }
-          else if (TYPE_MAXIMUM (time_t) <= INTMAX_MAX)
-            {
-              intmax_t sec = inf->stat.st_mtime;
-              sprintf (buf, "%"PRIdMAX".%.9d", sec, nsec);
-            }
-          else
-            {
-              uintmax_t sec = inf->stat.st_mtime;
-              sprintf (buf, "%"PRIuMAX".%.9d", sec, nsec);
-            }
-        }
-      fprintf (outfile, "%s %s\t%s", mark, name, buf);
+	  intmax_t sec = inf->stat.st_mtime;
+	  fprintf (outfile, "%s %s\t%"PRIdMAX".%.9d", mark, name, sec, nsec);
+	}
+      else
+	{
+	  uintmax_t sec = inf->stat.st_mtime;
+	  fprintf (outfile, "%s %s\t%"PRIuMAX".%.9d", mark, name, sec, nsec);
+	}
     }
   set_color_context (RESET_CONTEXT);
   putc ('\n', outfile);
@@ -103,13 +114,10 @@ print_context_script (struct change *script, bool unidiff)
   if (ignore_blank_lines || ignore_regexp.fastmap)
     mark_ignorable (script);
   else
-    {
-      struct change *e;
-      for (e = script; e; e = e->link)
-        e->ignore = false;
-    }
+    for (struct change *e = script; e; e = e->link)
+      e->ignore = false;
 
-  find_function_last_search = - files[0].prefix_lines;
+  find_function_last_search = - curr.file[0].prefix_lines;
   find_function_last_match = LIN_MAX;
 
   if (unidiff)
@@ -170,38 +178,33 @@ print_context_function (FILE *out, char const *function)
 static void
 pr_context_hunk (struct change *hunk)
 {
-  lin first0, last0, first1, last1, i;
-  char const *prefix;
-  char const *function;
-  FILE *out;
-
   /* Determine range of line numbers involved in each file.  */
-
+  lin first0, last0, first1, last1;
   enum changes changes = analyze_hunk (hunk, &first0, &last0, &first1, &last1);
   if (! changes)
     return;
 
   /* Include a context's width before and after.  */
 
-  i = - files[0].prefix_lines;
-  first0 = MAX (first0 - context, i);
-  first1 = MAX (first1 - context, i);
-  if (last0 < files[0].valid_lines - context)
+  lin minus_prefix_lines = - curr.file[0].prefix_lines;
+  first0 = MAX (first0 - context, minus_prefix_lines);
+  first1 = MAX (first1 - context, minus_prefix_lines);
+  if (last0 < curr.file[0].valid_lines - context)
     last0 += context;
   else
-    last0 = files[0].valid_lines - 1;
-  if (last1 < files[1].valid_lines - context)
+    last0 = curr.file[0].valid_lines - 1;
+  if (last1 < curr.file[1].valid_lines - context)
     last1 += context;
   else
-    last1 = files[1].valid_lines - 1;
+    last1 = curr.file[1].valid_lines - 1;
 
   /* If desired, find the preceding function definition line in file 0.  */
-  function = NULL;
+  char const *function = nullptr;
   if (function_regexp.fastmap)
-    function = find_function (files[0].linbuf, first0);
+    function = find_function (curr.file[0].linbuf, first0);
 
   begin_output ();
-  out = outfile;
+  FILE *out = outfile;
 
   fputs ("***************", out);
 
@@ -211,7 +214,7 @@ pr_context_hunk (struct change *hunk)
   putc ('\n', out);
   set_color_context (LINE_NUMBER_CONTEXT);
   fputs ("*** ", out);
-  print_context_number_range (&files[0], first0, last0);
+  print_context_number_range (&curr.file[0], first0, last0);
   fputs (" ****", out);
   set_color_context (RESET_CONTEXT);
   putc ('\n', out);
@@ -220,7 +223,7 @@ pr_context_hunk (struct change *hunk)
     {
       struct change *next = hunk;
 
-      for (i = first0; i <= last0; i++)
+      for (lin i = first0; i <= last0; i++)
         {
           set_color_context (DELETE_CONTEXT);
 
@@ -232,7 +235,7 @@ pr_context_hunk (struct change *hunk)
 
           /* Compute the marking for line I.  */
 
-          prefix = " ";
+          char const *prefix = " ";
           if (next && next->line0 <= i)
             {
               /* The change NEXT covers this line.
@@ -240,16 +243,16 @@ pr_context_hunk (struct change *hunk)
                  Otherwise it is "deleted".  */
               prefix = (next->inserted > 0 ? "!" : "-");
             }
-          print_1_line_nl (prefix, &files[0].linbuf[i], true);
+	  print_1_line_nl (prefix, &curr.file[0].linbuf[i], true);
           set_color_context (RESET_CONTEXT);
-          if (files[0].linbuf[i + 1][-1] == '\n')
+	  if (curr.file[0].linbuf[i + 1][-1] == '\n')
             putc ('\n', out);
         }
     }
 
   set_color_context (LINE_NUMBER_CONTEXT);
   fputs ("--- ", out);
-  print_context_number_range (&files[1], first1, last1);
+  print_context_number_range (&curr.file[1], first1, last1);
   fputs (" ----", out);
   set_color_context (RESET_CONTEXT);
   putc ('\n', out);
@@ -258,7 +261,7 @@ pr_context_hunk (struct change *hunk)
     {
       struct change *next = hunk;
 
-      for (i = first1; i <= last1; i++)
+      for (lin i = first1; i <= last1; i++)
         {
           set_color_context (ADD_CONTEXT);
 
@@ -270,7 +273,7 @@ pr_context_hunk (struct change *hunk)
 
           /* Compute the marking for line I.  */
 
-          prefix = " ";
+          char const *prefix = " ";
           if (next && next->line1 <= i)
             {
               /* The change NEXT covers this line.
@@ -278,9 +281,9 @@ pr_context_hunk (struct change *hunk)
                  Otherwise it is "inserted".  */
               prefix = (next->deleted > 0 ? "!" : "+");
             }
-          print_1_line_nl (prefix, &files[1].linbuf[i], true);
+	  print_1_line_nl (prefix, &curr.file[1].linbuf[i], true);
           set_color_context (RESET_CONTEXT);
-          if (files[1].linbuf[i + 1][-1] == '\n')
+	  if (curr.file[1].linbuf[i + 1][-1] == '\n')
             putc ('\n', out);
         }
     }
@@ -319,44 +322,38 @@ print_unidiff_number_range (struct file_data const *file, lin a, lin b)
 static void
 pr_unidiff_hunk (struct change *hunk)
 {
-  lin first0, last0, first1, last1;
-  lin i, j, k;
-  struct change *next;
-  char const *function;
-  FILE *out;
-
   /* Determine range of line numbers involved in each file.  */
-
+  lin first0, last0, first1, last1;
   if (! analyze_hunk (hunk, &first0, &last0, &first1, &last1))
     return;
 
   /* Include a context's width before and after.  */
 
-  i = - files[0].prefix_lines;
-  first0 = MAX (first0 - context, i);
-  first1 = MAX (first1 - context, i);
-  if (last0 < files[0].valid_lines - context)
+  lin minus_prefix_lines = - curr.file[0].prefix_lines;
+  first0 = MAX (first0 - context, minus_prefix_lines);
+  first1 = MAX (first1 - context, minus_prefix_lines);
+  if (last0 < curr.file[0].valid_lines - context)
     last0 += context;
   else
-    last0 = files[0].valid_lines - 1;
-  if (last1 < files[1].valid_lines - context)
+    last0 = curr.file[0].valid_lines - 1;
+  if (last1 < curr.file[1].valid_lines - context)
     last1 += context;
   else
-    last1 = files[1].valid_lines - 1;
+    last1 = curr.file[1].valid_lines - 1;
 
   /* If desired, find the preceding function definition line in file 0.  */
-  function = NULL;
+  char const *function = nullptr;
   if (function_regexp.fastmap)
-    function = find_function (files[0].linbuf, first0);
+    function = find_function (curr.file[0].linbuf, first0);
 
   begin_output ();
-  out = outfile;
+  FILE *out = outfile;
 
   set_color_context (LINE_NUMBER_CONTEXT);
   fputs ("@@ -", out);
-  print_unidiff_number_range (&files[0], first0, last0);
+  print_unidiff_number_range (&curr.file[0], first0, last0);
   fputs (" +", out);
-  print_unidiff_number_range (&files[1], first1, last1);
+  print_unidiff_number_range (&curr.file[1], first1, last1);
   fputs (" @@", out);
   set_color_context (RESET_CONTEXT);
 
@@ -365,9 +362,9 @@ pr_unidiff_hunk (struct change *hunk)
 
   putc ('\n', out);
 
-  next = hunk;
-  i = first0;
-  j = first1;
+  struct change *next = hunk;
+  lin i = first0;
+  lin j = first1;
 
   while (i <= last0 || j <= last1)
     {
@@ -376,26 +373,26 @@ pr_unidiff_hunk (struct change *hunk)
 
       if (!next || i < next->line0)
         {
-          char const *const *line = &files[0].linbuf[i++];
+	  char const *const *line = &curr.file[0].linbuf[i++];
           if (! (suppress_blank_empty && **line == '\n'))
             putc (initial_tab ? '\t' : ' ', out);
-          print_1_line (NULL, line);
+          print_1_line (nullptr, line);
           j++;
         }
       else
         {
           /* For each difference, first output the deleted part. */
 
-          k = next->deleted;
+          lin k = next->deleted;
 
           while (k--)
             {
-              char const * const *line = &files[0].linbuf[i++];
+	      char const *const *line = &curr.file[0].linbuf[i++];
               set_color_context (DELETE_CONTEXT);
               putc ('-', out);
               if (initial_tab && ! (suppress_blank_empty && **line == '\n'))
                 putc ('\t', out);
-              print_1_line_nl (NULL, line, true);
+              print_1_line_nl (nullptr, line, true);
 
               set_color_context (RESET_CONTEXT);
 
@@ -409,12 +406,12 @@ pr_unidiff_hunk (struct change *hunk)
 
           while (k--)
             {
-              char const * const *line = &files[1].linbuf[j++];
+	      char const *const *line = &curr.file[1].linbuf[j++];
               set_color_context (ADD_CONTEXT);
               putc ('+', out);
               if (initial_tab && ! (suppress_blank_empty && **line == '\n'))
                 putc ('\t', out);
-              print_1_line_nl (NULL, line, true);
+              print_1_line_nl (nullptr, line, true);
 
               set_color_context (RESET_CONTEXT);
 
@@ -434,38 +431,32 @@ pr_unidiff_hunk (struct change *hunk)
    to the 'struct change' for the last change before those lines.  */
 
 static struct change * ATTRIBUTE_PURE
-find_hunk (struct change *start)
+find_hunk (struct change *script)
 {
-  struct change *prev;
-  lin top0, top1;
-  lin thresh;
-
   /* Threshold distance is CONTEXT if the second change is ignorable,
-     2 * CONTEXT + 1 otherwise.  Integer overflow can't happen, due
-     to CONTEXT_LIM.  */
+     min (2 * CONTEXT + 1, LIN_MAX) otherwise.  */
   lin ignorable_threshold = context;
-  lin non_ignorable_threshold = 2 * context + 1;
+  lin non_ignorable_threshold = (ckd_mul (&non_ignorable_threshold, context, 2)
+				 ? LIN_MAX
+				 : non_ignorable_threshold + 1);
 
-  do
+  for (struct change *next; ; script = next)
     {
+      next = script->link;
       /* Compute number of first line in each file beyond this changed.  */
-      top0 = start->line0 + start->deleted;
-      top1 = start->line1 + start->inserted;
-      prev = start;
-      start = start->link;
-      thresh = (start && start->ignore
-                ? ignorable_threshold
-                : non_ignorable_threshold);
-      /* It is not supposed to matter which file we check in the end-test.
-         If it would matter, crash.  */
-      if (start && start->line0 - top0 != start->line1 - top1)
-        abort ();
-    } while (start
-             /* Keep going if less than THRESH lines
-                elapse before the affected line.  */
-             && start->line0 - top0 < thresh);
+      lin top0 = script->line0 + script->deleted;
+      lin top1 = script->line1 + script->inserted;
+      lin thresh = (next && next->ignore
+		    ? ignorable_threshold
+		    : non_ignorable_threshold);
+      /* It is not supposed to matter which file we check in the end-test.  */
+      dassert (!next || next->line0 - top0 == next->line1 - top1);
 
-  return prev;
+      /* Keep going if less than THRESH lines elapse
+	 before the affected line.  */
+      if (!next || thresh <= next->line0 - top0)
+	return script;
+    }
 }
 
 /* Set the 'ignore' flag properly in each change in SCRIPT.
@@ -478,12 +469,12 @@ mark_ignorable (struct change *script)
   while (script)
     {
       struct change *next = script->link;
-      lin first0, last0, first1, last1;
 
       /* Turn this change into a hunk: detach it from the others.  */
-      script->link = NULL;
+      script->link = nullptr;
 
       /* Determine whether this change is ignorable.  */
+      lin first0, last0, first1, last1;
       script->ignore = ! analyze_hunk (script,
                                        &first0, &last0, &first1, &last1);
 
@@ -497,10 +488,10 @@ mark_ignorable (struct change *script)
 
 /* Find the last function-header line in LINBUF prior to line number LINENUM.
    This is a line containing a match for the regexp in 'function_regexp'.
-   Return the address of the text, or NULL if no function-header is found.  */
+   Return the address of the text, or null if no function-header is found.  */
 
 static char const *
-find_function (char const * const *linbuf, lin linenum)
+find_function (char const *const *linbuf, lin linenum)
 {
   lin i = linenum;
   lin last = find_function_last_search;
@@ -510,13 +501,13 @@ find_function (char const * const *linbuf, lin linenum)
     {
       /* See if this line is what we want.  */
       char const *line = linbuf[i];
-      size_t linelen = linbuf[i + 1] - line - 1;
+      idx_t linelen = linbuf[i + 1] - line - 1;
 
       /* This line is for documentation; in practice it's equivalent
 	 to LEN = LINELEN and no machine code is generated.  */
       regoff_t len = MIN (linelen, TYPE_MAXIMUM (regoff_t));
 
-      if (0 <= re_search (&function_regexp, line, len, 0, len, NULL))
+      if (0 <= re_search (&function_regexp, line, len, 0, len, nullptr))
         {
           find_function_last_match = i;
           return line;
@@ -527,5 +518,5 @@ find_function (char const * const *linbuf, lin linenum)
   if (find_function_last_match != LIN_MAX)
     return linbuf[find_function_last_match];
 
-  return NULL;
+  return nullptr;
 }

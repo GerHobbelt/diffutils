@@ -5,25 +5,33 @@ TESTS = \
   bignum \
   binary \
   brief-vs-stat-zero-kernel-lies \
+  bug-64316 \
   cmp \
   colliding-file-names \
   diff3 \
   excess-slash \
+  expand-tabs \
   help-version	\
+  ifdef \
   invalid-re	\
   function-line-vs-leading-space \
+  ignore-case \
   ignore-matching-lines \
+  ignore-tab-expansion \
   label-vs-func	\
   large-subopt \
   new-file \
   no-dereference \
   no-newline-at-eof \
+  side-by-side \
+  starting-file \
   stdin \
   strcoll-0-names \
   filename-quoting \
   strip-trailing-cr \
   timezone \
-  colors
+  colors \
+  y2038-vs-32bit
 
 XFAIL_TESTS = large-subopt
 
