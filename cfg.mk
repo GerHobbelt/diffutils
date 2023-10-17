@@ -1,5 +1,5 @@
 # Customize maint.mk                           -*- makefile -*-
-# Copyright (C) 2003-2013, 2015-2022 Free Software Foundation, Inc.
+# Copyright (C) 2003-2013, 2015-2023 Free Software Foundation, Inc.
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -36,11 +36,14 @@ announcement_Cc_ = $(translation_project_), $(PACKAGE)-devel@gnu.org
 # Now that we have better tests, make this the default.
 export VERBOSE = yes
 
-old_NEWS_hash = 94e919f647d397a84992078ccedba212
+old_NEWS_hash = d6a8096805f9b3ee162842058477f0bc
 
 # Tell maint.mk's syntax-check rules that diff gets config.h directly or
 # via diff.h or system.h.
 config_h_header = (<config\.h>|"(diff|system)\.h")
+
+# Add an exemption for sc_makefile_at_at_check.
+_makefile_at_at_check_exceptions = ' && !/MAKEINFO/'
 
 update-copyright-env = \
   UPDATE_COPYRIGHT_USE_INTERVALS=1 \
@@ -70,7 +73,11 @@ config-save:
 	ln -nsf $(_date_time) $(_cf_state_dir)/latest
 	cp lib/config.h config.status $(_cf_state_dir)/latest
 
-exclude_file_name_regexp--sc_space_tab = ^gl/lib/.*\.c\.diff$$
+exclude_file_name_regexp--sc_GPL_version = ^gl/lib/
+exclude_file_name_regexp--sc_bindtextdomain = ^gl/tests/
+exclude_file_name_regexp--sc_doubled_words = ^gl/lib/mcel\.h$$
+exclude_file_name_regexp--sc_prohibit_doubled_word = ^(gl/lib/mcel\.h|tests/y2038-vs-32bit)$$
+exclude_file_name_regexp--sc_prohibit_strcmp = ^gl/lib/
 
 # Tell gnulib's tight_scope rule that we mark externs with XTERN
-export _gl_TS_extern = extern|XTERN
+export _gl_TS_extern = extern|XTERN|DIFF_INLINE|SYSTEM_INLINE|SYSTEM_EXTERN

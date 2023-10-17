@@ -1,6 +1,6 @@
 /* Buffer primitives for comparison operations.
 
-   Copyright (C) 2002, 2009-2013, 2015-2022 Free Software Foundation, Inc.
+   Copyright (C) 2002, 2009-2013, 2015-2023 Free Software Foundation, Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,5 +15,7 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-size_t block_read (int, char *, size_t);
-size_t buffer_lcm (size_t, size_t, size_t) _GL_ATTRIBUTE_CONST;
+#include "idx.h"
+#include <stddef.h>
+ptrdiff_t block_read (int, char *, idx_t);
+idx_t buffer_lcm (idx_t, idx_t, idx_t) _GL_ATTRIBUTE_CONST;

@@ -1,7 +1,7 @@
 /* Shared definitions for GNU DIFF
 
    Copyright (C) 1988-1989, 1991-1995, 1998, 2001-2002, 2004, 2009-2013,
-   2015-2022 Free Software Foundation, Inc.
+   2015-2023 Free Software Foundation, Inc.
 
    This file is part of GNU DIFF.
 
@@ -22,6 +22,16 @@
 #include <regex.h>
 #include <stdio.h>
 #include <unlocked-io.h>
+
+_GL_INLINE_HEADER_BEGIN
+
+#ifdef GDIFF_MAIN
+# define DIFF_INLINE _GL_EXTERN_INLINE
+# define XTERN
+#else
+# define DIFF_INLINE _GL_INLINE
+# define XTERN extern
+#endif
 
 /* What kind of changes a hunk contains.  */
 enum changes
@@ -54,12 +64,6 @@ enum colors_style
 
 /* Variables for command line options */
 
-#ifndef GDIFF_MAIN
-# define XTERN extern
-#else
-# define XTERN
-#endif
-
 enum output_style
 {
   /* No output style specified.  */
@@ -91,8 +95,12 @@ enum output_style
 };
 
 /* True for output styles that are robust,
-   i.e. can handle a file that ends in a non-newline.  */
-#define ROBUST_OUTPUT_STYLE(S) ((S) != OUTPUT_ED && (S) != OUTPUT_FORWARD_ED)
+   i.e. can handle a file that ends in a non-newline.
+   This is indented unusually to pacify 'make syntax-check'.  */
+DIFF_INLINE bool robust_output_style (enum output_style s)
+{
+  return s != OUTPUT_ED && s != OUTPUT_FORWARD_ED;
+}
 
 XTERN enum output_style output_style;
 
@@ -179,7 +187,7 @@ XTERN bool brief;
 XTERN bool expand_tabs;
 
 /* Number of columns between tab stops.  */
-XTERN size_t tabsize;
+XTERN intmax_t tabsize;
 
 /* Use a tab in the output, rather than a space, before the text of an
    input line, so as to keep the proper alignment in the input line
@@ -216,8 +224,8 @@ XTERN bool left_column;
 XTERN bool suppress_common_lines;
 
 /* The half line width and column 2 offset for OUTPUT_SDIFF.  */
-XTERN size_t sdiff_half_width;
-XTERN size_t sdiff_column2_offset;
+XTERN intmax_t sdiff_half_width;
+XTERN intmax_t sdiff_column2_offset;
 
 /* String containing all the command options diff received,
    with spaces between and at the beginning but none at the end.
@@ -261,30 +269,57 @@ struct change
 
 /* Structures that describe the input files.  */
 
+/* Directory entry types.  Like dirent DT_* macros, but portable and
+   safe to use as 'char'.  Use the same values as GNU/Linux, as this
+   may help compilers on that platform.  */
+enum detype
+  {
+    DE_UNKNOWN,
+    DE_FIFO,
+    DE_CHR,
+    DE_DIR = 4,
+    DE_BLK = 6,
+    DE_REG = 8,
+    DE_LNK = 10,
+    DE_SOCK = 12,
+    DE_WHT = 14,
+
+    /* This one is not in GNU/Linux; it means the directory entry
+       type has been determined but is none of the above.  */
+    DE_OTHER
+  };
+
 /* Data on one input file being compared.  */
 
 struct file_data {
     int             desc;	/* File descriptor  */
+    int             openerr;	/* openat errno, or 0  */
+    int             err;	/* openat or fstatat or fstat errno, or 0  */
     char const      *name;	/* File name  */
+    char const      *filetype;	/* file type as untranslated string  */
     struct stat     stat;	/* File status */
+
+    /* Directory stream corresponding to DESC, if it has been fdopendir'ed.
+       Null otherwise.  */
+    DIR *dirstream;
 
     /* Buffer in which text of file is read.  */
     word *buffer;
 
     /* Allocated size of buffer, in bytes.  Always a multiple of
        sizeof *buffer.  */
-    size_t bufsize;
+    idx_t bufsize;
 
     /* Number of valid bytes now in the buffer.  */
-    size_t buffered;
+    idx_t buffered;
 
     /* Array of pointers to lines in the file.  */
     char const **linbuf;
 
-    /* linbuf_base <= buffered_lines <= valid_lines <= alloc_lines.
-       linebuf[linbuf_base ... buffered_lines - 1] are possibly differing.
-       linebuf[linbuf_base ... valid_lines - 1] contain valid data.
-       linebuf[linbuf_base ... alloc_lines - 1] are allocated.  */
+    /* linbuf_base <= 0 <= buffered_lines <= valid_lines <= alloc_lines.
+       linbuf[0 ... buffered_lines - 1] are possibly differing.
+       linbuf[linbuf_base ... valid_lines - 1] contain valid data.
+       linbuf[linbuf_base ... alloc_lines - 1] are allocated.  */
     lin linbuf_base, buffered_lines, valid_lines, alloc_lines;
 
     /* Pointer to end of prefix of this file to ignore when hashing.  */
@@ -314,9 +349,9 @@ struct file_data {
     lin nondiscarded_lines;
 
     /* Vector, indexed by real origin-0 line number,
-       containing 1 for a line that is an insertion or a deletion.
+       containing true for a line that is an insertion or a deletion.
        The results of comparison are stored here.  */
-    char *changed;
+    bool *changed;
 
     /* 1 if file ends in a line with no final newline.  */
     bool missing_newline;
@@ -329,21 +364,34 @@ struct file_data {
     lin equiv_max;
 };
 
-/* The file buffer, considered as an array of bytes rather than
-   as an array of words.  */
-#define FILE_BUFFER(f) ((char *) (f)->buffer)
+/* struct file_data.desc markers.
+   A top level parent directory desc can be AT_FDCWD;
+   it is OK if AT_FDCWD is one of these other values.  */
+enum { OPEN_FAILED = -1 }; /* open was attempted but failed */
+enum { NONEXISTENT = -2 }; /* nonexistent file */
+enum { UNOPENED = -3 }; /* unopened file (e.g., file type mismatch) */
 
 /* Data on two input files being compared.  */
 
 struct comparison
   {
+    /* The two files.  */
     struct file_data file[2];
-    struct comparison const *parent;  /* parent, if a recursive comparison */
+
+    /* The parent comparison, or &noparent if at the top level.  */
+    struct comparison const *parent;
   };
 
 /* Describe the two files currently being compared.  */
 
-XTERN struct file_data files[2];
+XTERN struct comparison curr;
+
+/* A placeholder for the parent of the top level comparison.
+   Only the desc slots are used; although they are typically AT_FDCWD,
+   one might be nonnegative for a directory at the top level
+   for 'diff DIR FILE' or 'diff FILE DIR'.  */
+
+XTERN struct comparison noparent;
 
 /* Stdio stream to output diffs to.  */
 
@@ -355,14 +403,18 @@ XTERN FILE *outfile;
 extern int diff_2_files (struct comparison *);
 
 /* context.c */
-extern void print_context_header (struct file_data[], char const * const *, bool);
+extern void print_context_header (struct file_data[],
+				  char const *const *, bool);
 extern void print_context_script (struct change *, bool);
 
+/* diff.c */
+extern int compare_files (struct comparison const *, enum detype const[2],
+			  char const *, char const *);
+
 /* dir.c */
-extern int diff_dirs (struct comparison const *,
-                      int (*) (struct comparison const *,
-                               char const *, char const *));
-extern char *find_dir_file_pathname (char const *, char const *)
+extern int diff_dirs (struct comparison *);
+extern char *find_dir_file_pathname (struct file_data *, char const *,
+				     enum detype *)
   ATTRIBUTE_MALLOC ATTRIBUTE_DEALLOC_FREE
   ATTRIBUTE_RETURNS_NONNULL;
 
@@ -374,7 +426,7 @@ extern void pr_forward_ed_script (struct change *);
 extern void print_ifdef_script (struct change *);
 
 /* io.c */
-extern void file_block_read (struct file_data *, size_t);
+extern void file_block_read (struct file_data *, idx_t);
 extern bool read_files (struct file_data[], bool);
 
 /* normal.c */
@@ -389,10 +441,9 @@ extern void print_sdiff_script (struct change *);
 /* util.c */
 extern char const change_letter[4];
 extern char const pr_program[];
-extern bool lines_differ (char const *, char const *) ATTRIBUTE_PURE;
-extern lin translate_line_number (struct file_data const *, lin);
-extern struct change *find_change (struct change *);
-extern struct change *find_reverse_change (struct change *);
+extern lin translate_line_number (struct file_data const *, lin)
+  ATTRIBUTE_PURE;
+extern struct change *find_change (struct change *) ATTRIBUTE_CONST;
 extern enum changes analyze_hunk (struct change *, lin *, lin *, lin *, lin *);
 extern void begin_output (void);
 extern void cleanup_signal_handlers (void);
@@ -404,8 +455,8 @@ extern void output_1_line (char const *, char const *, char const *,
                            char const *);
 extern void perror_with_name (char const *);
 extern _Noreturn void pfatal_with_name (char const *);
-extern void print_1_line (char const *, char const * const *);
-extern void print_1_line_nl (char const *, char const * const *, bool);
+extern void print_1_line (char const *, char const *const *);
+extern void print_1_line_nl (char const *, char const *const *, bool);
 extern void print_message_queue (void);
 extern void print_number_range (char, struct file_data *, lin, lin);
 extern void print_script (struct change *, struct change * (*) (struct change *),
@@ -426,3 +477,5 @@ XTERN bool presume_output_tty;
 
 extern void set_color_context (enum color_context color_context);
 extern void set_color_palette (char const *palette);
+
+_GL_INLINE_HEADER_END
